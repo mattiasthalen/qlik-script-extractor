@@ -247,7 +247,7 @@ func splitStatements(script string) []string {
 			}
 			if c == '/' && i+1 < len(script) && script[i+1] == '*' {
 				i += 2
-				for i+1 < len(script) && !(script[i] == '*' && script[i+1] == '/') {
+				for i+1 < len(script) && (script[i] != '*' || script[i+1] != '/') {
 					i++
 				}
 				i += 2
@@ -264,9 +264,10 @@ func splitStatements(script string) []string {
 				inD = false
 			}
 		case brDepth > 0:
-			if c == '[' {
+			switch c {
+			case '[':
 				brDepth++
-			} else if c == ']' {
+			case ']':
 				brDepth--
 			}
 		default:
