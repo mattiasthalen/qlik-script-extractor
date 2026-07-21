@@ -177,6 +177,56 @@ func TestQlikview_ParseQVF_ArtifactCounts(t *testing.T) {
 	}
 }
 
+func TestQlikview_ParseQVF_Sheets(t *testing.T) {
+	skipIfNoQlikviewFixtures(t)
+
+	path := filepath.Join(qlikviewTestdata, "Qlik_Sense_Content_Monitor.qvf")
+	data, err := extractor.ParseQVF(path)
+	if err != nil {
+		t.Fatalf("ParseQVF failed: %v", err)
+	}
+
+	if len(data.Sheets) != 16 {
+		t.Fatalf("expected 16 sheets, got %d", len(data.Sheets))
+	}
+
+	// Locate the Applications sheet and assert it has classified data objects.
+	var apps *extractor.Sheet
+	for i := range data.Sheets {
+		if data.Sheets[i].Title == "Applications" {
+			apps = &data.Sheets[i]
+			break
+		}
+	}
+	if apps == nil {
+		t.Fatal("sheet 'Applications' not found")
+	}
+
+	classified := 0
+	for _, o := range apps.Objects {
+		if !o.Unclassified {
+			classified++
+		}
+	}
+	if classified == 0 {
+		t.Errorf("Applications sheet has no classified objects: %+v", apps.Objects)
+	}
+
+	// At least one object across the app must resolve a master-visualisation
+	// reference into concrete measures (proves qExtendsId resolution works).
+	resolvedMasterRef := false
+	for _, s := range data.Sheets {
+		for _, o := range s.Objects {
+			if o.MasterObjectID != "" && (len(o.Measures) > 0 || len(o.Dimensions) > 0) {
+				resolvedMasterRef = true
+			}
+		}
+	}
+	if !resolvedMasterRef {
+		t.Error("expected at least one resolved master-visualisation reference")
+	}
+}
+
 func TestQlikview_ParseQVF_SpotCheckMeasure(t *testing.T) {
 	skipIfNoQlikviewFixtures(t)
 

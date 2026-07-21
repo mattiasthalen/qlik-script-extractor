@@ -23,6 +23,7 @@ func newExtractCmd() *cobra.Command {
 	var measures bool
 	var dimensions bool
 	var variables bool
+	var sheets bool
 
 	cmd := &cobra.Command{
 		Use:   "extract",
@@ -34,14 +35,16 @@ artifacts to a per-file folder alongside or under --out.`,
 			anyChanged := cmd.Flags().Changed("script") ||
 				cmd.Flags().Changed("measures") ||
 				cmd.Flags().Changed("dimensions") ||
-				cmd.Flags().Changed("variables")
+				cmd.Flags().Changed("variables") ||
+				cmd.Flags().Changed("sheets")
 			extractAll := !anyChanged
 			doScript := extractAll || script
 			doMeasures := extractAll || measures
 			doDimensions := extractAll || dimensions
 			doVariables := extractAll || variables
+			doSheets := extractAll || sheets
 
-			if anyChanged && !doScript && !doMeasures && !doDimensions && !doVariables {
+			if anyChanged && !doScript && !doMeasures && !doDimensions && !doVariables && !doSheets {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "error: no artifact type selected\n")
 				return ExitError(1)
 			}
@@ -159,6 +162,20 @@ artifacts to a per-file folder alongside or under --out.`,
 						}
 						artifacts = append(artifacts, extractor.Artifact{Name: "variables.json", Content: b})
 					}
+					if doSheets {
+						b, marshalErr := json.MarshalIndent(qvfData.Sheets, "", "  ")
+						if marshalErr != nil {
+							hasErr = true
+							printer.ClearSpinner()
+							printer.FileResult(ui.Result{
+								Status:  ui.StatusErr,
+								SrcPath: relPath,
+								Message: fmt.Sprintf("sheets: %v", marshalErr),
+							})
+							continue
+						}
+						artifacts = append(artifacts, extractor.Artifact{Name: "sheets.json", Content: b})
+					}
 				} else {
 					// QVW: script only
 					if doScript {
@@ -257,6 +274,7 @@ artifacts to a per-file folder alongside or under --out.`,
 	cmd.Flags().BoolVar(&measures, "measures", false, "Extract master measures (QVF only)")
 	cmd.Flags().BoolVar(&dimensions, "dimensions", false, "Extract master dimensions (QVF only)")
 	cmd.Flags().BoolVar(&variables, "variables", false, "Extract variables (QVF only)")
+	cmd.Flags().BoolVar(&sheets, "sheets", false, "Extract sheets & visualisations inventory (QVF only)")
 
 	cmd.SetFlagErrorFunc(func(c *cobra.Command, err error) error {
 		_, _ = fmt.Fprintf(c.ErrOrStderr(), "error: %v\n", err)

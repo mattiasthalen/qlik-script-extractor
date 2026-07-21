@@ -54,6 +54,7 @@ qlik-parser extract [flags]
 | `--measures` | | `false` | Extract master measures (QVF only) |
 | `--dimensions` | | `false` | Extract master dimensions (QVF only) |
 | `--variables` | | `false` | Extract variables (QVF only) |
+| `--sheets` | | `false` | Extract sheets & visualisations inventory (QVF only) |
 | `--source` | `-s` | current directory | Source directory to scan |
 | `--out` | `-o` | alongside source files | Output directory |
 | `--dry-run` | | `false` | Preview without writing files |
