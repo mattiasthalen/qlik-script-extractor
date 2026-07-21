@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/mattiasthalen/qlik-parser/internal/redact"
 )
 
 // QVFData holds all artifacts extracted from a single .qvf file.
@@ -17,6 +19,7 @@ type QVFData struct {
 	Variables  []Variable
 	Sheets     []Sheet
 	Lineage    ScriptLineage
+	Warnings   []string
 }
 
 // Measure represents a Qlik master measure.
@@ -103,6 +106,9 @@ func ParseQVF(path string) (*QVFData, error) {
 	resolveExtends(viz)
 	result.Sheets = resolveSheets(sheets, viz)
 	result.Lineage = ParseScriptLineage(result.Script)
+	// Non-destructive by default: flag embedded secrets as warnings but leave
+	// the extracted script intact. The service layer can opt into redaction.
+	result.Warnings = redact.Warnings("script", redact.Scan(result.Script))
 	return result, nil
 }
 

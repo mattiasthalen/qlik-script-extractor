@@ -12,7 +12,7 @@ import (
 type Status int
 
 const (
-	StatusOK   Status = iota
+	StatusOK Status = iota
 	StatusWarn
 	StatusErr
 )
@@ -39,9 +39,9 @@ type Printer struct {
 	tty    bool
 	dryRun bool
 
-	okCount     int
-	warnCount   int
-	errCount    int
+	okCount      int
+	warnCount    int
+	errCount     int
 	spinnerWidth int
 }
 
