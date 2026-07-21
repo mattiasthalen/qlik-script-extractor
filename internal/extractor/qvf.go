@@ -48,6 +48,68 @@ type Variable struct {
 	Value   json.RawMessage `json:"value"`
 }
 
+// maxBlockBytes caps how much a single candidate zlib stream is inflated.
+// Metadata blocks (script, master items, sheet/object trees) are small; a
+// larger stream is a data/symbol table we deliberately skip. The cap also
+// bounds memory when scanning untrusted, multi-gigabyte files.
+const maxBlockBytes = 16 << 20 // 16 MiB
+
+// zlibFlags are the valid second header bytes of a zlib stream: the values
+// where (0x78<<8 | flag) % 31 == 0.
+var zlibFlags = map[byte]bool{0x01: true, 0x5E: true, 0x9C: true, 0xDA: true}
+
+// qvfParser accumulates artifacts across the scan of one file, independent of
+// whether the bytes come from memory or a ReaderAt.
+type qvfParser struct {
+	result *QVFData
+	sheets map[string]*sheetRaw
+	viz    map[string]Visualization
+}
+
+func newQVFParser() *qvfParser {
+	return &qvfParser{
+		result: &QVFData{
+			Measures:   []Measure{},
+			Dimensions: []Dimension{},
+			Variables:  []Variable{},
+			Sheets:     []Sheet{},
+		},
+		// Sheets reference object blocks by ID; both may appear anywhere in the
+		// file and in any order, so collect them and resolve after the scan.
+		sheets: map[string]*sheetRaw{},
+		viz:    map[string]Visualization{},
+	}
+}
+
+// feedBlock classifies one inflated, NUL-trimmed JSON block.
+func (p *qvfParser) feedBlock(trimmed []byte) {
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(trimmed, &raw) != nil {
+		return
+	}
+	// Master items, the script and variables are stored as bare top-level
+	// blocks. Sheets and their chart objects are instead wrapped in a
+	// qRoot/qProperty/qChildren envelope, so classify the block itself and,
+	// if present, every property tree nested under qRoot.
+	classifyBlock(raw, p.result, p.sheets, p.viz)
+	if rootRaw, ok := raw["qRoot"]; ok {
+		for _, prop := range collectObjectProps(rootRaw) {
+			classifyBlock(prop, p.result, p.sheets, p.viz)
+		}
+	}
+}
+
+// finalize resolves cross-references and derives lineage and warnings.
+func (p *qvfParser) finalize() *QVFData {
+	resolveExtends(p.viz)
+	p.result.Sheets = resolveSheets(p.sheets, p.viz)
+	p.result.Lineage = ParseScriptLineage(p.result.Script)
+	// Non-destructive by default: flag embedded secrets as warnings but leave
+	// the extracted script intact. The service layer can opt into redaction.
+	p.result.Warnings = redact.Warnings("script", redact.Scan(p.result.Script))
+	return p.result
+}
+
 // ParseQVF reads a .qvf file and extracts all known artifact types in a single pass.
 // It never returns NoScriptError; the Script field is simply empty if not found.
 func ParseQVF(path string) (*QVFData, error) {
@@ -56,60 +118,74 @@ func ParseQVF(path string) (*QVFData, error) {
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 
-	result := &QVFData{
-		Measures:   []Measure{},
-		Dimensions: []Dimension{},
-		Variables:  []Variable{},
-		Sheets:     []Sheet{},
-	}
-
-	// Sheets reference object blocks by ID; both may appear anywhere in the
-	// file and in any order, so collect them and resolve after the scan.
-	sheets := map[string]*sheetRaw{}
-	viz := map[string]Visualization{}
-
-	validFLG := map[byte]bool{0x01: true, 0x5E: true, 0x9C: true, 0xDA: true}
-
+	p := newQVFParser()
 	for i := 0; i < len(data)-1; i++ {
-		if data[i] != 0x78 || !validFLG[data[i+1]] {
+		if data[i] != 0x78 || !zlibFlags[data[i+1]] {
 			continue
 		}
-		r, err := zlib.NewReader(bytes.NewReader(data[i:]))
-		if err != nil {
-			continue
+		if block := inflateBounded(bytes.NewReader(data[i:])); block != nil {
+			p.feedBlock(block)
 		}
-		decompressed, err := io.ReadAll(r)
-		_ = r.Close()
-		if err != nil {
-			continue
-		}
-		trimmed := bytes.TrimRight(decompressed, "\x00")
+	}
+	return p.finalize(), nil
+}
 
-		// Use a generic map to inspect top-level keys.
-		var raw map[string]json.RawMessage
-		if err := json.Unmarshal(trimmed, &raw); err != nil {
+// ParseReaderAt extracts artifacts from a .qvf exposed as an io.ReaderAt of the
+// given size, without loading the whole file into the heap. Backing the
+// ReaderAt with a memory-mapped file (e.g. golang.org/x/exp/mmap) lets the OS
+// page multi-gigabyte apps in and out while the same per-block inflate cap
+// bounds peak memory. The parsing core stays standard-library only.
+func ParseReaderAt(ra io.ReaderAt, size int64) (*QVFData, error) {
+	p := newQVFParser()
+
+	const window = 1 << 20 // 1 MiB scan window
+	buf := make([]byte, window+1)
+	var off int64
+	for off < size-1 {
+		n, err := ra.ReadAt(buf, off)
+		if n < 2 {
+			if err != nil {
+				break
+			}
+			off += int64(n)
 			continue
 		}
-
-		// Master items, the script and variables are stored as bare top-level
-		// blocks. Sheets and their chart objects are instead wrapped in a
-		// qRoot/qProperty/qChildren envelope, so classify the block itself and,
-		// if present, every property tree nested under qRoot.
-		classifyBlock(raw, result, sheets, viz)
-		if rootRaw, ok := raw["qRoot"]; ok {
-			for _, prop := range collectObjectProps(rootRaw) {
-				classifyBlock(prop, result, sheets, viz)
+		for j := 0; j < n-1; j++ {
+			if buf[j] != 0x78 || !zlibFlags[buf[j+1]] {
+				continue
+			}
+			abs := off + int64(j)
+			sr := io.NewSectionReader(ra, abs, size-abs)
+			if block := inflateBounded(sr); block != nil {
+				p.feedBlock(block)
 			}
 		}
+		if err != nil {
+			break // reached EOF (short final read)
+		}
+		// Overlap by one byte so a header straddling the window edge is caught.
+		off += int64(n - 1)
 	}
+	return p.finalize(), nil
+}
 
-	resolveExtends(viz)
-	result.Sheets = resolveSheets(sheets, viz)
-	result.Lineage = ParseScriptLineage(result.Script)
-	// Non-destructive by default: flag embedded secrets as warnings but leave
-	// the extracted script intact. The service layer can opt into redaction.
-	result.Warnings = redact.Warnings("script", redact.Scan(result.Script))
-	return result, nil
+// inflateBounded decompresses a single zlib stream from r, bounded by
+// maxBlockBytes, and returns the NUL-trimmed bytes. It returns nil for a false
+// header match or an oversized (non-metadata) block.
+func inflateBounded(r io.Reader) []byte {
+	zr, err := zlib.NewReader(r)
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = zr.Close() }()
+	out, err := io.ReadAll(io.LimitReader(zr, maxBlockBytes+1))
+	if err != nil {
+		return nil
+	}
+	if int64(len(out)) > maxBlockBytes {
+		return nil
+	}
+	return bytes.TrimRight(out, "\x00")
 }
 
 // classifyBlock routes one decoded property object into the result by its
