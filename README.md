@@ -73,6 +73,28 @@ qlik-parser extract [flags]
 qlik-parser extract --source ./qlik-apps --dry-run
 ```
 
+### `catalog`
+
+Scans `--source` recursively for `.qvf` files and builds a combined cross-app
+index of every master measure, master dimension and variable, noting which app
+defines each so duplicated and conflicting definitions surface.
+
+```
+qlik-parser catalog [flags]
+```
+
+**Flags:**
+
+| Flag | Short | Default | Description |
+|------|-------|---------|-------------|
+| `--source` | `-s` | current directory | Source directory to scan |
+| `--out` | `-o` | stdout | Output file |
+| `--ndjson` | | `false` | Emit newline-delimited JSON rows for BigQuery loading |
+
+An entry is marked `conflicting` when the same name resolves to more than one
+distinct definition across apps. The `--ndjson` output is ready for
+`bq load --source_format=NEWLINE_DELIMITED_JSON`.
+
 ### `version`
 
 ```sh
