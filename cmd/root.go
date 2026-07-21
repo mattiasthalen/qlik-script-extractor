@@ -29,6 +29,7 @@ and extracts embedded artifacts (load scripts, and more to come).`,
 	root.AddCommand(newVersionCmd())
 	root.AddCommand(newExtractCmd())
 	root.AddCommand(newCatalogCmd())
+	root.AddCommand(newServeCmd())
 
 	root.PersistentFlags().StringVar(&logLevel, "log-level", "disabled",
 		"Log level: debug, info, warn, error, disabled")

@@ -95,6 +95,90 @@ An entry is marked `conflicting` when the same name resolves to more than one
 distinct definition across apps. The `--ndjson` output is ready for
 `bq load --source_format=NEWLINE_DELIMITED_JSON`.
 
+### `serve` (Cloud Run documentation service)
+
+Runs an HTTP service that documents Qlik apps from Cloud Storage. It reads the
+`.qvf` via a memory-mapped `ReaderAt` so multi-gigabyte apps are paged by the OS
+rather than loaded into RAM, and the parsing core stays standard-library only.
+
+```
+qlik-parser serve [--addr :8080]
+```
+
+**Endpoints:**
+
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| `GET` | `/health` | none | Liveness/readiness probe. |
+| `POST` | `/parse` | API key | Document one app. |
+| `POST` | `/events` | Cloud Run IAM | Eventarc GCS object-finalize handler. |
+
+`POST /parse` body (the caller passes a **location**, not the file body — QVFs
+are large):
+
+```json
+{
+  "source": "gs://my-bucket/apps/Sales.qvf",
+  "output": "gs://my-bucket/docs",
+  "redaction": "redact",
+  "markdown": true,
+  "inline": false
+}
+```
+
+- `source` — `gs://…`, an http(s) signed URL, or a local path.
+- `output` — `gs://` prefix or local dir for `<app>.json` (and `<app>.md`); omit to skip writing.
+- `redaction` — `flag` (default, report only) or `redact` (replace secret values).
+- `markdown` — request the AI documentation stage (only if enabled).
+- `inline` — include the full document in the HTTP response.
+
+**Configuration (environment):**
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `8080` | Listen port (set by Cloud Run). |
+| `QVF_API_KEY` | _(unset)_ | Required key for `/parse`; unauthenticated if unset. |
+| `QVF_API_KEY_HEADER` | `X-API-Key` | Header carrying the key. |
+| `QVF_OUTPUT_BUCKET` | _(unset)_ | Default output prefix (used by `/events`). |
+| `QVF_TMP_DIR` | system temp | Scratch dir for streaming remote inputs before mmap. |
+| `QVF_AI_ENABLED` | `false` | `true` enables the AI documentation stage. |
+| `QVF_AI_MODEL` | `claude-sonnet-5` | Anthropic model id. |
+| `ANTHROPIC_API_KEY` | _(unset)_ | API key for the AI stage. |
+
+The API-key header is used because the Power Platform caller cannot easily mint
+Google identity tokens. The AI stage is a separate switch, so extraction still
+works with it off. The output document schema is documented in
+[`docs/schema.md`](docs/schema.md).
+
+**Deploy to Cloud Run:**
+
+```sh
+gcloud run deploy qvf-docs \
+  --source . \
+  --region europe-north1 \
+  --no-allow-unauthenticated \
+  --memory 2Gi \
+  --set-env-vars QVF_API_KEY=<key>,QVF_OUTPUT_BUCKET=gs://my-bucket/docs
+
+# Optional: enable the AI stage
+gcloud run services update qvf-docs \
+  --region europe-north1 \
+  --set-env-vars QVF_AI_ENABLED=true,ANTHROPIC_API_KEY=<anthropic-key>
+```
+
+To trigger on new uploads, point an Eventarc GCS `object.finalized` trigger at
+the service's `/events` path:
+
+```sh
+gcloud eventarc triggers create qvf-on-upload \
+  --location europe-north1 \
+  --destination-run-service qvf-docs \
+  --destination-run-path /events \
+  --event-filters "type=google.cloud.storage.object.v1.finalized" \
+  --event-filters "bucket=my-upload-bucket" \
+  --service-account <sa>@<project>.iam.gserviceaccount.com
+```
+
 ### `version`
 
 ```sh
