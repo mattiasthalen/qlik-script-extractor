@@ -1,0 +1,12 @@
+.git
+.github
+*.md
+docs
+dist
+coverage.out
+qlik-parser
+scripts
+.devcontainer
+.goreleaser.yaml
+# keep integration fixtures out of the image build context
+internal/extractor/testdata/fixtures/integration
