@@ -16,6 +16,7 @@ type QVFData struct {
 	Dimensions []Dimension
 	Variables  []Variable
 	Sheets     []Sheet
+	Lineage    ScriptLineage
 }
 
 // Measure represents a Qlik master measure.
@@ -101,6 +102,7 @@ func ParseQVF(path string) (*QVFData, error) {
 
 	resolveExtends(viz)
 	result.Sheets = resolveSheets(sheets, viz)
+	result.Lineage = ParseScriptLineage(result.Script)
 	return result, nil
 }
 
